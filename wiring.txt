@@ -1,0 +1,14 @@
+darlington pairs:
+left to right:
+L: PWM -> 2.2KR -> L
+M: Output
+R: Ground
+
+Screen:
+SCL -> D1
+SDA -> D0
+
+R: TX
+G: RX
+B: WKP
+SRV: A5
