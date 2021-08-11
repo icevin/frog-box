@@ -1,6 +1,8 @@
 #include "Particle.h"
 #include "softap_http.h"
 
+STARTUP(WiFi.setListenTimeout(60));
+
 struct Page
 {
   const char *url;
@@ -146,6 +148,10 @@ int SERVO = A5;
 int BUTTON = D6;
 
 #define CONTROL_CHAR '~'
+#define MAX_NOTIFICATIONS 3
+
+// in units of 50ms
+#define NOTIFICATION_INTERVAL 10000
 
 int setRGB(String);
 int setSRV(String);
@@ -153,20 +159,29 @@ int pend_message(String);
 int enable(String);
 
 void display_out(String);
+void notify();
+void servo_notify();
 
 int pending = 0;
 String pending_messages = "";
 
 int enable_led = 1;
 int enable_servo = 1;
+
 int led_watchdog = 0;
+int notifications = 0;
+uint32_t notify_timer = 0;
+
 
 #define PWM_RES_MAX 16777215
+SYSTEM_THREAD(ENABLED);
 
 // setup() runs once, when the device is first turned on.
 void setup()
 {
-
+  WiFi.listen(TRUE);
+  interrupts();
+  WiFi.setListenTimeout(60);
   // Put initialization like pinMode and begin functions here.
   pinMode(LED_R, OUTPUT);
   pinMode(LED_G, OUTPUT);
@@ -207,8 +222,6 @@ void setup()
   // display.println(0xDEADBEEF, HEX);
   // display.display();
   // delay(2000);
-
-
 }
 
 // Loop variables - kept here for neatness
@@ -218,32 +231,79 @@ void loop()
 {
   rc = 0;
   button_value = digitalRead(BUTTON);
-  if (button_value == LOW) {
-    if (pending > 0 && pending_messages != "") {
+  led_watchdog += 1;
+  if (led_watchdog > 60)
+  {
+    led_watchdog = 0;
+    analogWrite(LED_R, 0);
+    analogWrite(LED_G, 0);
+    analogWrite(LED_B, 0);
+  }
+  
+  if (button_value == LOW)
+  {
+    if (pending > 0 && pending_messages != "")
+    {
+      if (pending > 1)
+      {
+        display.clearDisplay();
+        for (int16_t i = 0; i < (display.height() / 2); i += 4)
+        {
+          display.drawCircle(display.width() / 2, display.height() / 2, i, WHITE);
+          display.display();
+        }
+        delay(500);
+      }
       rc = read_message();
       delay(5000);
-    } else {
+    }
+    else
+    {
       display.clearDisplay();
-      display.setTextSize(1);
-      display.setCursor(10, 32);
-      display.println("No more messages! <3");
+      for (int16_t i = (display.height() / 4); i > 0; i -= 2)
+      {
+        display.drawCircle(display.width() / 2, display.height() / 2, i, WHITE);
+        display.display();
+      }
+      delay(500);
+      display.clearDisplay();
+      display.setTextSize(2);
+      display.setCursor(0, 0);
+      display.setTextColor(WHITE);
+      display.println("   No more");
+      display.println(" messages!");
+      display.println("  <3");
       display.display();
       delay(3000);
       display.clearDisplay();
     }
   }
-  delayMicroseconds(100);
+  else if (pending > 0 && pending_messages != "" && notifications < MAX_NOTIFICATIONS)
+  {
+    if (notify_timer > NOTIFICATION_INTERVAL)
+    {
+      notify_timer = 0;
+      notify();
+      notifications += 1;
+    }
+    notify_timer += 1;
+  }
+  delay(50);
 }
 
-void display_out(String message) {
+// Max 30 characters
+void display_out(String message)
+{
   display.clearDisplay();
   display.setTextSize(1);
-  display.setTextColor(WHITE);
+  display.setTextColor(BLACK, WHITE);
   display.setCursor(0, 0);
-  display.println("Received message:");
+  display.println("Received message: (" + String(pending) + ")");
   display.setTextSize(2);
+  display.setTextColor(WHITE);
   display.println(message);
   display.display();
+  delay(1000);
   return;
 }
 
@@ -253,6 +313,15 @@ int pend_message(String cmd)
   {
     pending += 1;
     pending_messages += cmd.substring(1, cmd.length());
+    notifications = 0;
+    notify();
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(BLACK, WHITE);
+    display.setCursor(0, 0);
+    display.println("Received message!");
+    display.println("Click button to read!");
+    display.display();
     return 0;
   }
   else
@@ -278,6 +347,33 @@ int read_message()
   return -1;
 }
 
+
+void notify() {
+  if (enable_led == 1)
+  {
+    analogWrite(LED_R, random(0, 100));
+    analogWrite(LED_G, random(0, 100));
+    analogWrite(LED_B, random(0, 100));
+  }
+  else
+  {
+    analogWrite(LED_R, 0);
+    analogWrite(LED_G, 0);
+    analogWrite(LED_B, 0);
+  }
+  if (enable_servo == 1) {
+    setSRV("10");
+    delay(400);
+    setSRV("180");
+    delay(1700);
+    setSRV("50");
+    delay(400);
+    setSRV("140");
+    delay(1000);
+    setSRV("90");
+  }
+}
+
 int enable(String cmd)
 {
   if (cmd.length() != 2)
@@ -291,7 +387,6 @@ int enable(String cmd)
     return enable_led + enable_servo;
   }
 }
-
 
 // input in degrees, 0-180
 unsigned int servoToPWM(int input)
@@ -312,7 +407,9 @@ int setRGB(String command)
     analogWrite(LED_G, constrain(command.substring(3, 6).toInt(), 0, 255));
     analogWrite(LED_B, constrain(command.substring(6, 9).toInt(), 0, 255));
     return constrain(command.substring(0, 3).toInt(), 0, 255);
-  } else {
+  }
+  else
+  {
     analogWrite(LED_R, 0);
     analogWrite(LED_G, 0);
     analogWrite(LED_B, 0);
@@ -325,87 +422,6 @@ int setSRV(String command)
   analogWrite(SERVO, servoToPWM(command.toInt()), 50);
   return servoToPWM(command.toInt());
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 void testdrawbitmap(const uint8_t *bitmap, uint8_t w, uint8_t h)
 {
@@ -453,123 +469,3 @@ void testdrawbitmap(const uint8_t *bitmap, uint8_t w, uint8_t h)
   }
 }
 
-void testdrawchar(void)
-{
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
-  display.setCursor(0, 0);
-
-  for (uint8_t i = 0; i < 168; i++)
-  {
-    if (i == '\n')
-      continue;
-    display.write(i);
-    if ((i > 0) && (i % 21 == 0))
-      display.println();
-  }
-  display.display();
-}
-
-void testdrawcircle(void)
-{
-  for (int16_t i = 0; i < display.height(); i += 2)
-  {
-    display.drawCircle(display.width() / 2, display.height() / 2, i, WHITE);
-    display.display();
-  }
-}
-
-void testfillrect(void)
-{
-  uint8_t color = 1;
-  for (int16_t i = 0; i < display.height() / 2; i += 3)
-  {
-    // alternate colors
-    display.fillRect(i, i, display.width() - i * 2, display.height() - i * 2, color % 2);
-    display.display();
-    color++;
-  }
-}
-
-void testdrawtriangle(void)
-{
-  for (int16_t i = 0; i < min(display.width(), display.height()) / 2; i += 5)
-  {
-    display.drawTriangle(display.width() / 2, display.height() / 2 - i,
-                         display.width() / 2 - i, display.height() / 2 + i,
-                         display.width() / 2 + i, display.height() / 2 + i, WHITE);
-    display.display();
-  }
-}
-
-void testfilltriangle(void)
-{
-  uint8_t color = WHITE;
-  for (int16_t i = min(display.width(), display.height()) / 2; i > 0; i -= 5)
-  {
-    display.fillTriangle(display.width() / 2, display.height() / 2 - i,
-                         display.width() / 2 - i, display.height() / 2 + i,
-                         display.width() / 2 + i, display.height() / 2 + i, WHITE);
-    if (color == WHITE)
-      color = BLACK;
-    else
-      color = WHITE;
-    display.display();
-  }
-}
-
-void testdrawroundrect(void)
-{
-  for (int16_t i = 0; i < display.height() / 2 - 2; i += 2)
-  {
-    display.drawRoundRect(i, i, display.width() - 2 * i, display.height() - 2 * i, display.height() / 4, WHITE);
-    display.display();
-  }
-}
-
-void testfillroundrect(void)
-{
-  uint8_t color = WHITE;
-  for (int16_t i = 0; i < display.height() / 2 - 2; i += 2)
-  {
-    display.fillRoundRect(i, i, display.width() - 2 * i, display.height() - 2 * i, display.height() / 4, color);
-    if (color == WHITE)
-      color = BLACK;
-    else
-      color = WHITE;
-    display.display();
-  }
-}
-
-void testdrawrect(void)
-{
-  for (int16_t i = 0; i < display.height() / 2; i += 2)
-  {
-    display.drawRect(i, i, display.width() - 2 * i, display.height() - 2 * i, WHITE);
-    display.display();
-  }
-}
-
-void testscrolltext(void)
-{
-  display.setTextSize(2);
-  display.setTextColor(WHITE);
-  display.setCursor(10, 0);
-  display.clearDisplay();
-  display.println("scroll");
-  display.display();
-
-  display.startscrollright(0x00, 0x0F);
-  delay(2000);
-  display.stopscroll();
-  delay(1000);
-  display.startscrollleft(0x00, 0x0F);
-  delay(2000);
-  display.stopscroll();
-  delay(1000);
-  display.startscrolldiagright(0x00, 0x07);
-  delay(2000);
-  display.startscrolldiagleft(0x00, 0x07);
-  delay(2000);
-  display.stopscroll();
-}
